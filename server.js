@@ -2,8 +2,8 @@ const express = require("express");
 const passport = require("./config/passport");
 const connectDB = require("./config/db");
 const { PORT } = require("./config/env");
-const authRoutes = require("./routes/auth");
-const userRoutes = require("./routes/user");
+// const authRoutes = require("./routes/auth");
+// const userRoutes = require("./routes/user");
 
 const app = express();
 
@@ -12,8 +12,8 @@ app.use(express.json());
 app.use(passport.initialize());
 
 // Routes
-app.use("/auth", authRoutes);
-app.use("/user", userRoutes);
+// app.use("/auth", authRoutes);
+// app.use("/user", userRoutes);
 
 // Connect to MongoDB
 connectDB();
