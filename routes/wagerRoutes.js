@@ -1,26 +1,26 @@
 const express = require("express");
 const router = express.Router();
 const wagerController = require("../controllers/wagerController");
-const authMiddleware = require("../middlewares/authMiddleware");
-const roleMiddleware = require("../middlewares/roleMiddleware");
+const { authenticateJWT } = require("../middlewares/authMiddleware");
+const { checkRole } = require("../middlewares/roleMiddleware");
 
 // @route GET /wagers/user
 // @desc Get all wagers for the authenticated user
 // @access Private
-router.get("/user", authMiddleware, wagerController.getUserWagers);
+router.get("/user", authenticateJWT, wagerController.getUserWagers);
 
 // @route POST /wagers
 // @desc Create a new wager
 // @access Private
-router.post("/", authMiddleware, wagerController.createWager);
+router.post("/", authenticateJWT, wagerController.createWager);
 
 // @route GET /wagers
 // @desc Get all wagers (Admin access)
 // @access Admin
 router.get(
   "/",
-  authMiddleware,
-  roleMiddleware("admin"),
+  authenticateJWT,
+  checkRole("admin"),
   wagerController.getAllWagers
 );
 

@@ -1,6 +1,10 @@
 const express = require("express");
-const { register, login, googleOAuth } = require("./authController");
-const { authenticateJWT } = require("./authMiddleware");
+const {
+  register,
+  login,
+  googleOAuth,
+} = require("../controllers/authController");
+const { authenticateJWT } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
