@@ -14,7 +14,6 @@ router.get("/", authenticateJWT, getUserRewards);
 // Claim Rewards
 router.post("/claim", authenticateJWT, claimRewards);
 
-// Update Wager Requirement (Example Route)
 router.put("/wager", authenticateJWT, updateWagerRequirement);
 
 module.exports = router;

@@ -32,7 +32,6 @@ exports.claimRewards = async (req, res) => {
   }
 };
 
-// Update Wager Requirement (Example)
 exports.updateWagerRequirement = async (req, res) => {
   const { wager_amount } = req.body;
   try {
