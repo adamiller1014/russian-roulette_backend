@@ -3,7 +3,7 @@ const { Schema } = mongoose;
 
 const wagerSchema = new Schema({
   user_id: {
-    type: Schema.Types.UUID, // Requires a UUID library to generate unique IDs
+    type: Schema.Types.ObjectId,
     ref: "User",
     required: true,
   },

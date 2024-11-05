@@ -17,6 +17,7 @@
     "express-session": "^1.18.1",
     "google-auth-library": "^9.14.2",
     "jsonwebtoken": "^9.0.0",
+    "loadsh": "^0.0.4",
     "mongoose": "^7.0.1",
     "morgan": "^1.10.0",
     "passport": "^0.6.0",

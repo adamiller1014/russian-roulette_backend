@@ -18,6 +18,7 @@ const wagerRoutes = require("./routes/wagerRoutes");
 const affiliateRoutes = require("./routes/affiliateRoutes");
 const chatRoutes = require("./routes/chatRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
+const gameRoutes = require("./routes/gameRoutes");
 
 // Load environment variables
 dotenv.config();
@@ -51,7 +52,7 @@ app.use(passport.session());
 app.use(rateLimiter.apiLimiter);
 
 // JWT authentication middleware (protect routes)
-app.use(verifyToken);
+// app.use(verifyToken);
 
 // Routes
 app.use("/api/auth", authRoutes);
@@ -62,6 +63,7 @@ app.use("/api/wagers", wagerRoutes);
 app.use("/api/affiliates", affiliateRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/transactions", transactionRoutes);
+app.use("/api/game", gameRoutes);
 
 // Error handling middleware
 app.use(errorHandler);
