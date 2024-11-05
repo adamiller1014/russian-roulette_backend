@@ -15,11 +15,37 @@ const generateToken = (user) => {
 exports.register = async (req, res) => {
   try {
     const { username, email, password } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ 
+      $or: [{ email }, { username }] 
+    });
+    
+    if (existingUser) {
+      return res.status(400).json({ 
+        error: "User already exists with this email or username" 
+      });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ username, email, password: hashedPassword });
+    const user = new User({ 
+      username, 
+      email, 
+      password: hashedPassword 
+    });
+    
     await user.save();
+    
+    // Generate token but don't send password in response
     const token = generateToken(user);
-    res.status(201).json({ token, user });
+    const userResponse = {
+      _id: user._id,
+      username: user.username,
+      email: user.email,
+      user_level: user.user_level
+    };
+    
+    res.status(201).json({ token, user: userResponse });
   } catch (error) {
     logger.error(`Registration error: ${error.message}`);
     res.status(500).json({ error: "Registration failed" });

@@ -1,136 +1,219 @@
+
+const User = require('../models/User');
+const Player = require('../models/Player');
+const UserBalances = require('../models/UserBalances');
+const Wager = require('../models/Wager');
 const crypto = require('crypto');
-const fs = require('fs');
-const {
-  generateHashChain,
-  saveHashChain,
-} = require("../utils/generateHashChain");
-const verifyHashChain = require("../utils/verifyHashChain");
 
-// Load or generate hash chain
-let hashChain;
-try {
-  hashChain = JSON.parse(fs.readFileSync("hashChain.json", "utf-8"));
-} catch (error) {
-  hashChain = generateHashChain(100, 10);
-  saveHashChain(hashChain, true);
-}
-let hashIndex = 0;
+class GameController {
+  static async playGame(userId, betAmount, gameType = 'RR (Solo)') {
+    try {
+      // Get user and balance information
+      const userBalance = await UserBalances.findOne({ user_id: userId });
+      const player = await Player.findOne({ username: userId });
 
-// Automated hash generation
-function automatedHashGeneration() {
-  const hashChainLimit = 100; // Set the limit for the hash chain length
-  if (hashChain.length < hashChainLimit) {
-    const newHashes = generateHashChain(100, 10);
-    hashChain = [...hashChain, ...newHashes];
-    saveHashChain(hashChain, false);
-    console.log(`Generated and saved ${newHashes.length} new hashes.`);
-  }
-}
+      if (!userBalance || !player) {
+        throw new Error('User not found');
+      }
 
-// Set an interval for hash generation (e.g., every 5 minutes)
-setInterval(automatedHashGeneration, 5 * 60 * 1000); // Adjust time as needed
+      // Verify sufficient balance
+      if (parseFloat(userBalance.cash_balance.toString()) < betAmount) {
+        throw new Error('Insufficient balance');
+      }
 
-// Utility function for generating normalized random numbers from hashes
-function getRandomFloatFromHash() {
-  const hash = hashChain[hashIndex];
-  hashIndex = (hashIndex + 1) % hashChain.length;
-  return parseInt(hash, 16) / 0xffffffffffffffff;
-}
+      // Generate unique seeds for this game instance
+      const serverSeed = crypto.randomBytes(32).toString('hex');
+      const clientSeed = crypto.randomBytes(32).toString('hex');
+      const nonce = Math.floor(Math.random() * 1000000);
+      
+      // Create wager record
+      const wager = new Wager({
+        user_id: userId,
+        game_name: gameType,
+        game_id: crypto.randomBytes(16).toString('hex'),
+        balance_before: userBalance.cash_balance,
+        wager_amount: betAmount,
+        target: 1, // Default target multiplier
+        currency: 'USD' // Or dynamic based on user preference
+      });
 
-// Statistics and logging setup
-let totalRoundsPlayed = 0;
-let totalPayout = 0;
-let totalBetAmount = 0;
-let baseWins = 0;
-let bonusWins = 0;
+      // Run game simulation
+      const gameResult = await this.runGameSimulation({
+        serverSeed,
+        clientSeed,
+        nonce,
+        betAmount,
+        totalRounds: 1
+      });
 
-// Main game logic with stats tracking
-function playGameRound(betAmount, targetMultiplier) {
-  const roll = getRandomFloatFromHash();
-  let outcome = "EMPTY";
-  let payout = 0;
-  let bonusRounds = 0;
+      // Calculate total win amount
+      const totalWinAmount = gameResult.totalBaseWinAmount + gameResult.totalBonusWinAmount;
 
-  if (roll < 0.3) {
-    outcome = "FIRE"; 
-    payout = betAmount * targetMultiplier;
-    baseWins++;
-  } else if (roll >= 0.3 && roll < 0.35) {
-    outcome = "BONUS"; 
-    payout = betAmount * targetMultiplier * 2;
-    bonusRounds = 10;
-    bonusWins++;
-  }
+      // Update wager record
+      wager.won_amount = totalWinAmount;
+      wager.rtp = totalWinAmount > 0 ? (totalWinAmount / betAmount) * 100 : 0;
+      wager.site_profit = betAmount - totalWinAmount;
+      await wager.save();
 
-  return { outcome, payout, bonusRounds };
-}
+      // Update player statistics and game history
+      await this.updatePlayerStats(player, gameResult, {
+        serverSeed,
+        clientSeed,
+        nonce,
+        betAmount,
+        winAmount: totalWinAmount
+      });
 
-function calculateBonusRounds(betAmount, targetMultiplier, rounds) {
-  let totalBonusWin = 0;
-  for (let i = 0; i < rounds; i++) {
-    const roll = getRandomFloatFromHash();
-    if (roll < 0.1) { 
-      totalBonusWin += betAmount * targetMultiplier * 2;
+      // Update user balance
+      await this.updateUserBalance(userBalance, gameResult);
+
+      return {
+        success: true,
+        gameResult,
+        serverSeed,
+        clientSeed,
+        nonce,
+        wager: {
+          id: wager._id,
+          betAmount,
+          winAmount: totalWinAmount,
+          rtp: wager.rtp
+        }
+      };
+    } catch (error) {
+      throw error;
     }
   }
-  return totalBonusWin;
-}
 
-async function playGame(req, res) {
-  try {
-    const { betAmount, targetMultiplier } = req.body;
+  static async runGameSimulation({ serverSeed, clientSeed, nonce, betAmount, totalRounds }) {
+    // Import your existing game simulation logic
+    const {
+      generateFloats,
+      GAME_CONSTANTS,
+      bonusMultipliers,
+      baseAmmoCounts,
+      bonusAmmoCounts
 
-    if (typeof betAmount !== 'number' || betAmount <= 0) {
-      return res.status(400).json({ error: "Invalid bet amount." });
+    } = require('../utils/gamestimulation');
+
+    let cursor = 0;
+    
+    // Initialize result variables
+    let playerBalance = betAmount;
+    let totalBaseWinAmount = 0;
+    let totalBonusWinAmount = 0;
+    let totalBaseWins = 0;
+    let totalBonusWins = 0;
+    let bonusesTriggered = 0;
+    let bonusRetriggersCount = 0;
+
+    // Generate game result for base game
+    const baseMultiplier = Math.floor(
+      Math.max(1, 0xffffffff / (generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 0xffffffff + 1)) * 100
+    ) / 100;
+    cursor += 4;
+
+    const firstRoll = Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 63);
+    cursor += 4;
+
+    const winResultRoll = Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6);
+    cursor += 4;
+
+    const baseAmmoCount = baseAmmoCounts[firstRoll];
+
+    // Check for base game win
+    if (baseMultiplier >= GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET && winResultRoll < baseAmmoCount) {
+      const winAmount = betAmount * GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET;
+      playerBalance += winAmount;
+      totalBaseWins++;
+      totalBaseWinAmount += winAmount;
     }
-    if (typeof targetMultiplier !== 'number' || targetMultiplier <= 0) {
-      return res.status(400).json({ error: "Invalid target multiplier." });
+
+    // Check for bonus trigger
+    if (Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 200) === 0) {
+      bonusesTriggered++;
+      let bonusRoundsRemaining = GAME_CONSTANTS.INITIAL_BONUS_ROUNDS;
+      cursor += 4;
+
+      // Bonus rounds loop
+      while (bonusRoundsRemaining > 0) {
+        const bonusRoundMultiplier = Math.floor(
+          Math.max(1, 0xffffffff / (generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 0xffffffff + 1)) * 100
+        ) / 100;
+        cursor += 4;
+
+        const bonusWinResultRoll = Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6);
+        cursor += 4;
+
+        const bonusAmmoCount = bonusAmmoCounts[Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 186)];
+        cursor += 4;
+
+        // Check for bonus win
+        if (bonusRoundMultiplier >= GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET && 
+            bonusWinResultRoll < baseAmmoCount + bonusAmmoCount) {
+          const winAmount = betAmount * GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET;
+          playerBalance += winAmount;
+          totalBonusWins++;
+          totalBonusWinAmount += winAmount;
+        }
+
+        // Check for bonus retrigger
+        if (Math.floor(generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 200) === 0) {
+          bonusRetriggersCount++;
+          bonusRoundsRemaining += GAME_CONSTANTS.BONUS_RETRIGGER_ROUNDS;
+        }
+        cursor += 4;
+
+        bonusRoundsRemaining--;
+      }
     }
 
-    // Track statistics
-    totalBetAmount += betAmount;
-    totalRoundsPlayed++;
+    const finalBalance = playerBalance;
 
-    // Base game round
-    const baseGame = playGameRound(betAmount, targetMultiplier);
-    let roundPayout = baseGame.payout;
-    let outcome = baseGame.outcome;
-    let bonusRounds = baseGame.bonusRounds;
-
-    // Bonus rounds calculation if applicable
-    if (bonusRounds > 0) {
-      const bonusPayout = calculateBonusRounds(betAmount, targetMultiplier, bonusRounds);
-      roundPayout += bonusPayout;
-    }
-
-    totalPayout += roundPayout;
-
-    // Calculate RTP and win rates
-    const baseWinRate = (baseWins / totalRoundsPlayed) * 100;
-    const bonusWinRate = (bonusWins / totalRoundsPlayed) * 100;
-    const totalRTP = (totalPayout / totalBetAmount) * 100;
-
-    // Result with stats
-    const result = {
-      outcome,
-      payout: roundPayout,
-      playerBalance: roundPayout - betAmount,
-      statistics: {
-        totalRoundsPlayed,
-        baseWinRate,
-        bonusWinRate,
-        totalRTP,
-      },
-      hashUsed: hashChain[hashIndex - 1],
-      nextHash: hashChain[hashIndex],
-      verification: verifyHashChain(hashChain), 
+    return {
+      playerBalance: finalBalance,
+      totalBaseWinAmount,
+      totalBonusWinAmount,
+      totalBaseWins,
+      totalBonusWins,
+      totalBetAmount: betAmount,
+      bonusesTriggered,
+      bonusRetriggersCount
     };
+  }
 
-    res.status(200).json(result);
-  } catch (error) {
-    console.error("Error in playGame:", error);
-    res.status(500).json({ error: "An error occurred while playing the game." });
+  static async updatePlayerStats(player, gameResult, gameDetails) {
+    // Update game statistics
+    player.totalBaseWins += gameResult.totalBaseWins;
+    player.totalBonusWins += gameResult.totalBonusWins;
+    player.totalBaseWinAmount += gameResult.totalBaseWinAmount;
+    player.totalBonusWinAmount += gameResult.totalBonusWinAmount;
+    player.totalBetAmount += gameResult.totalBetAmount;
+    player.bonusesTriggered += gameResult.bonusesTriggered;
+    player.bonusRetriggersCount += gameResult.bonusRetriggersCount;
+    
+    // Add to game history
+    player.gameHistory.push({
+      serverSeed: gameDetails.serverSeed,
+      clientSeed: gameDetails.clientSeed,
+      nonce: gameDetails.nonce,
+      betAmount: gameDetails.betAmount,
+      winAmount: gameDetails.winAmount,
+      timestamp: new Date()
+    });
+    
+    await player.save();
+  }
+
+  static async updateUserBalance(userBalance, gameResult) {
+    const netWin = gameResult.totalBaseWinAmount + gameResult.totalBonusWinAmount - gameResult.totalBetAmount;
+    
+    // Convert Decimal128 to float for calculation
+    const currentBalance = parseFloat(userBalance.cash_balance.toString());
+    userBalance.cash_balance = currentBalance + netWin;
+    
+    await userBalance.save();
   }
 }
 
-module.exports = { playGame };
+module.exports = GameController;
