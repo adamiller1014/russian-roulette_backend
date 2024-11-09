@@ -1,22 +1,20 @@
 const crypto = require("crypto");
 
 let serverSeed = "server_seed";
-let clientSeed = "example_client_seed";
+const clientSeed = 'fixed_client_seed';
 let nonce = 0;
 let cursor = 0;
 
-// Hash generation function
 const generateHash = (data) => {
   return crypto.createHash("sha256").update(data).digest("hex");
 };
 
-// Hash verification function
 const verifyHash = (data, hash) => {
   const newHash = generateHash(data);
   return newHash === hash;
 };
 
-// Game simulation logic (from your previous code)
+// Game simulation logic
 function* byteGenerator({ serverSeed, clientSeed, nonce, cursor }) {
   let currentRound = Math.floor(cursor / 32);
   let currentRoundCursor = cursor % 32;

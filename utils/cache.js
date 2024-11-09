@@ -2,9 +2,12 @@ const redis = require("redis");
 const logger = require("./logger");
 
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379",
+  password: 'I8CzLY1x3L7tDANQEJKHn1YMIGGAolJM',
+  socket: {
+      host: 'redis-10542.c264.ap-south-1-1.ec2.redns.redis-cloud.com',
+      port: 10542
+  }
 });
-
 redisClient.on("error", (err) => logger.error(`Redis error: ${err}`));
 
 const connectRedis = async () => {
@@ -17,3 +20,5 @@ const connectRedis = async () => {
 };
 
 module.exports = { redisClient, connectRedis };
+
+

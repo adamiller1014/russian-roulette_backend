@@ -13,7 +13,7 @@ const wagerSchema = new Schema({
     required: true,
   },
   game_id: {
-    type: String, // Unique identifier for the game instance
+    type: String,
     required: true,
   },
   balance_before: {
@@ -25,7 +25,7 @@ const wagerSchema = new Schema({
     required: true,
   },
   target: {
-    type: Schema.Types.Decimal128, // A value to determine win conditions
+    type: Schema.Types.Decimal128, 
     required: true,
   },
   won_amount: {
@@ -37,18 +37,33 @@ const wagerSchema = new Schema({
     enum: ["USD", "BTC", "ETH"],
     required: true,
   },
-  rtp: {
-    type: Schema.Types.Decimal128, // Return-to-Player Percentage
-    default: 0,
-  },
-  site_profit: {
-    type: Schema.Types.Decimal128, // Profit earned by the platform
-    default: 0,
-  },
   wager_time: {
     type: Date,
     default: Date.now,
   },
+  status: {
+    type: String,
+    enum: ['pending', 'won', 'lost'],
+    default: 'pending',
+    required: true
+  }
 });
+
+// Virtual getters for calculated fields
+wagerSchema.virtual('rtp').get(function() {
+  const wagerAmount = parseFloat(this.wager_amount.toString());
+  const wonAmount = parseFloat(this.won_amount.toString());
+  return wagerAmount > 0 ? (wonAmount / wagerAmount) * 100 : 0;
+});
+
+wagerSchema.virtual('site_profit').get(function() {
+  const wagerAmount = parseFloat(this.wager_amount.toString());
+  const wonAmount = parseFloat(this.won_amount.toString());
+  return wagerAmount - wonAmount;
+});
+
+// Configure virtuals to be included in JSON output
+wagerSchema.set('toJSON', { virtuals: true });
+wagerSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model("Wager", wagerSchema);
