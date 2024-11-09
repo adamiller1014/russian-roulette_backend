@@ -1,27 +1,50 @@
 const express = require("express");
 const router = express.Router();
-const wagerController = require("../controllers/wagerController");
+const { WagerController, addSecurityHeaders } = require("../controllers/wagerController");
 const { authenticateJWT } = require("../middlewares/authMiddleware");
 const { checkRole } = require("../middlewares/roleMiddleware");
 
-// @route GET /wagers/user
-// @desc Get all wagers for the authenticated user
-// @access Private
-router.get("/user", authenticateJWT, wagerController.getUserWagers);
+// Apply security headers to all routes
+router.use(addSecurityHeaders);
 
-// @route POST /wagers
-// @desc Create a new wager
-// @access Private
-router.post("/", authenticateJWT, wagerController.createWager);
+// Get user's wagers
+router.get("/user", authenticateJWT, async (req, res) => {
+  try {
+    const result = await WagerController.getUserWagers(req);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-// @route GET /wagers
-// @desc Get all wagers (Admin access)
-// @access Admin
-router.get(
-  "/",
-  authenticateJWT,
-  checkRole("admin"),
-  wagerController.getAllWagers
-);
+// Create new wager
+router.post("/create", authenticateJWT, async (req, res) => {
+  try {
+    const result = await WagerController.createWager(req.user.id, req.body);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all wagers (admin only)
+router.get("/all", authenticateJWT, checkRole(["ADMIN"]), async (req, res) => {
+  try {
+    const wagers = await WagerController.getAllWagers();
+    res.json(wagers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get RTP statistics (admin only)
+router.get("/stats/rtp", authenticateJWT, checkRole(["ADMIN"]), async (req, res) => {
+  try {
+    const stats = await WagerController.getRTPStats(req.query);
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;

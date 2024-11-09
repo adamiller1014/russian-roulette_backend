@@ -1,27 +1,34 @@
-// generateHashChain.js
-const crypto = require('crypto');
-const fs = require('fs');
+const { generateHash, generateSeed } = require("./crypto");
+const fs = require("fs");
+
+function generateInitialSeed() {
+  return generateSeed(64);
+}
 
 function generateHashChain(hashChainLength, saveInterval) {
   const hashChain = [];
-  let currentHash = crypto.randomBytes(32).toString('hex');
+  let currentHash = generateSeed(32);
 
   for (let i = 0; i < hashChainLength; i++) {
     hashChain.unshift(currentHash);
     if ((i + 1) % saveInterval === 0 || i === hashChainLength - 1) {
       saveHashChain(hashChain, i === hashChainLength - 1);
     }
-    currentHash = crypto.createHash('sha256').update(currentHash).digest('hex');
+    currentHash = generateHash(currentHash);
   }
 
-  return hashChain; // Return the chain instead of logging for API use
+  return hashChain; 
 }
 
 function saveHashChain(hashChain, isFinalSave) {
-  fs.writeFileSync('hashChain.json', JSON.stringify(hashChain, null, 2));
-  if (isFinalSave) {
-    fs.writeFileSync('finalHash.json', JSON.stringify({ finalHash: hashChain[0] }, null, 2));
+  try {
+    fs.writeFileSync("hashChain.json", JSON.stringify(hashChain, null, 2));
+    if (isFinalSave) {
+      fs.writeFileSync("finalHash.json", JSON.stringify({ finalHash: hashChain[0] }, null, 2));
+    }
+  } catch (error) {
+    console.error("Error saving hash chain:", error);
   }
 }
 
-module.exports = { generateHashChain, saveHashChain };
+module.exports = { generateHashChain, saveHashChain, generateInitialSeed };
