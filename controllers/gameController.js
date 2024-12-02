@@ -1,3 +1,5 @@
+const crypto = require("crypto");
+const mongoose = require("mongoose");
 const Player = require("../models/Player");
 const UserBalances = require("../models/UserBalances");
 const Wager = require("../models/Wager");
@@ -11,11 +13,9 @@ const {
   bonusAmmoCounts,
 } = require("../utils/gamestimulation");
 const GroupGame = require("../models/GroupGame");
-const mongoose = require("mongoose");
-
-const crypto=require("crypto")
 
 class GameController {
+  // Main function to play a game, determines if it's a solo or group game
   static async playGame(userId, betAmount, gameType = "RR (Solo)") {
     try {
       if (gameType === "RR (Solo)") {
@@ -30,25 +30,33 @@ class GameController {
     }
   }
 
+  // Function to handle solo game logic
   static async playSoloGame(userId, betAmount) {
     try {
-      logger.info(
-        `Starting game for user ${userId} with bet amount ${betAmount}`
-      );
+      logger.info(`Starting game for user ${userId} with bet amount ${betAmount}`);
 
+      // Retrieve user balance and player information
       const userBalance = await UserBalances.findOne({ user_id: userId });
       const player = await Player.findOne({ username: userId });
 
+      // Check if user and player exist and have sufficient balance
       if (!userBalance || !player) {
         throw new Error("User or player not found");
       }
-
       if (parseFloat(userBalance.cash_balance.toString()) < betAmount) {
         throw new Error("Insufficient balance");
       }
 
+      // Deduct bet amount from user balance
+      userBalance.cash_balance = new mongoose.Types.Decimal128(
+        (parseFloat(userBalance.cash_balance.toString()) - betAmount).toString()
+      );
+      await userBalance.save();
+
+      // Generate seeds for game simulation
       const { serverSeed, clientSeed, nonce } = this.generateGameSeeds();
 
+      // Create a new wager record
       const wager = new Wager({
         user_id: userId,
         game_name: "RR (Solo)",
@@ -68,13 +76,11 @@ class GameController {
         totalRounds: 1,
       });
 
-      const totalWinAmount =
-        gameResult.totalBaseWinAmount + gameResult.totalBonusWinAmount;
+      // Calculate total win amount
+      const totalWinAmount = gameResult.totalBaseWinAmount + gameResult.totalBonusWinAmount;
 
-      wager.won_amount = totalWinAmount;
-      wager.rtp = totalWinAmount > 0 ? (totalWinAmount / betAmount) * 100 : 0;
-      wager.site_profit = betAmount - totalWinAmount;
-      await wager.save();
+      // Update user balance with win amount
+      await this.updateUserBalance(userBalance, gameResult);
 
       // Update player statistics and game history
       await this.updatePlayerStats(player, gameResult, {
@@ -85,12 +91,13 @@ class GameController {
         winAmount: totalWinAmount,
       });
 
-      // Update user balance
-      await this.updateUserBalance(userBalance, gameResult);
+      // Save wager result
+      wager.won_amount = totalWinAmount;
+      wager.rtp = totalWinAmount > 0 ? (totalWinAmount / betAmount) * 100 : 0;
+      wager.site_profit = betAmount - totalWinAmount;
+      await wager.save();
 
-      logger.info(
-        `Game result for user ${userId}: ${JSON.stringify(gameResult)}`
-      );
+      logger.info(`Game result for user ${userId}: ${JSON.stringify(gameResult)}`);
 
       return {
         success: true,
@@ -111,21 +118,28 @@ class GameController {
     }
   }
 
+  // Function to handle group game logic
   static async playGroupGame(userId, betAmount) {
     try {
       const userBalance = await UserBalances.findOne({ user_id: userId });
       const player = await Player.findOne({ username: userId });
 
+      // Check if user and player exist and have sufficient balance
       if (!userBalance || !player) {
         throw new Error("User or player not found");
       }
-
       if (parseFloat(userBalance.cash_balance.toString()) < betAmount) {
         throw new Error("Insufficient balance");
       }
 
-      // Find or create active group game
-      let groupGame = await GroupGame.findOne({ 
+      // Deduct bet amount from user balance
+      userBalance.cash_balance = new mongoose.Types.Decimal128(
+        (parseFloat(userBalance.cash_balance.toString()) - betAmount).toString()
+      );
+      await userBalance.save();
+
+      // Find or create an active group game
+      let groupGame = await GroupGame.findOne({
         status: 'pending',
         end_time: { $gt: new Date() }
       });
@@ -153,17 +167,6 @@ class GameController {
       });
       await wager.save();
 
-      // Deduct balance immediately
-      userBalance.cash_balance = new mongoose.Types.Decimal128(
-        (parseFloat(userBalance.cash_balance.toString()) - betAmount).toString()
-      );
-      await userBalance.save();
-
-      // If game is about to end, trigger outcome calculation
-      if (new Date(groupGame.end_time).getTime() - Date.now() < 1000) {
-        await this.calculateGroupGameOutcome(groupGame.game_id);
-      }
-
       return {
         success: true,
         gameId: groupGame.game_id,
@@ -173,80 +176,21 @@ class GameController {
           betAmount,
         }
       };
-
     } catch (error) {
       logger.error(`Error in playGroupGame for user ${userId}: ${error.message}`);
       throw error;
     }
   }
 
-  static async calculateGroupGameOutcome(gameId) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      const groupGame = await GroupGame.findOne({ game_id: gameId }).session(session);
-      if (!groupGame || groupGame.status !== 'pending') {
-        throw new Error("Invalid game or already processed");
-      }
-
-      const wagers = await Wager.find({ game_id: gameId }).session(session);
-      const { serverSeed, clientSeed, nonce } = this.generateGameSeeds();
-
-      // Run single game simulation for all players
-      const gameResult = await this.runGameSimulation({
-        serverSeed,
-        clientSeed,
-        nonce,
-        betAmount: 1, // Use 1 as base for multiplier calculation
-        totalRounds: 1,
-      });
-
-      // Update all wagers and balances
-      for (const wager of wagers) {
-        const userBalance = await UserBalances.findOne({ 
-          user_id: wager.user_id 
-        }).session(session);
-
-        const winAmount = wager.wager_amount * (gameResult.totalBaseWinAmount + gameResult.totalBonusWinAmount);
-        
-        // Update wager
-        wager.won_amount = winAmount;
-        wager.rtp = winAmount > 0 ? (winAmount / wager.wager_amount) * 100 : 0;
-        wager.site_profit = wager.wager_amount - winAmount;
-        wager.status = winAmount > 0 ? 'won' : 'lost';
-        await wager.save({ session });
-
-        // Update balance
-        if (winAmount > 0) {
-          userBalance.cash_balance = new mongoose.Types.Decimal128(
-            (parseFloat(userBalance.cash_balance.toString()) + winAmount).toString()
-          );
-          await userBalance.save({ session });
-        }
-      }
-
-      // Update group game status
-      groupGame.status = 'completed';
-      groupGame.result = gameResult;
-      await groupGame.save({ session });
-
-      await session.commitTransaction();
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
-    }
-  }
-
+  // Function to generate seeds for game simulation
   static generateGameSeeds() {
-    const serverSeed = generateSeed(32);
-    const clientSeed = generateSeed(32);
+    const serverSeed = generateSeed();
+    const clientSeed = generateSeed();
     const nonce = Math.floor(Math.random() * 1000000);
     return { serverSeed, clientSeed, nonce };
   }
 
+  // Function to run the game simulation
   static async runGameSimulation({
     serverSeed,
     clientSeed,
@@ -255,7 +199,6 @@ class GameController {
     totalRounds,
   }) {
     let cursor = 0;
-
     let playerBalance = betAmount;
     let totalBaseWinAmount = 0;
     let totalBonusWinAmount = 0;
@@ -264,97 +207,82 @@ class GameController {
     let bonusesTriggered = 0;
     let bonusRetriggersCount = 0;
 
-    const baseMultiplier =
-      Math.floor(
-        Math.max(
-          1,
-          0xffffffff /
-            (generateFloats({ serverSeed, clientSeed, nonce, cursor }) *
-              0xffffffff +
-              1)
-        ) * 100
-      ) / 100;
-    cursor += 4;
+    // Game simulation logic
+    for (let i = 0; i < totalRounds; i++) {
+      nonce++;
+      cursor = 0;
 
-    const firstRoll = Math.floor(
-      generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 63
-    );
-    cursor += 4;
+      playerBalance -= betAmount;
+      totalBaseRounds++;
 
-    const winResultRoll = Math.floor(
-      generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6
-    );
-    cursor += 4;
-
-    const baseAmmoCount = baseAmmoCounts[firstRoll];
-
-    if (
-      baseMultiplier >= GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET &&
-      winResultRoll < baseAmmoCount
-    ) {
-      const winAmount = betAmount * GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET;
-      playerBalance += winAmount;
-      totalBaseWins++;
-      totalBaseWinAmount += winAmount;
-    }
-
-    if (
-      Math.floor(
-        generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 200
-      ) === 0
-    ) {
-      bonusesTriggered++;
-      let bonusRoundsRemaining = GAME_CONSTANTS.INITIAL_BONUS_ROUNDS;
+      // Generate random numbers for game logic
+      const firstRoll = Math.floor(
+        generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 63
+      );
       cursor += 4;
 
-      while (bonusRoundsRemaining > 0) {
-        const bonusRoundMultiplier =
-          Math.floor(
-            Math.max(
-              1,
-              0xffffffff /
-                (generateFloats({ serverSeed, clientSeed, nonce, cursor }) *
-                  0xffffffff +
-                  1)
-            ) * 100
-          ) / 100;
+      const baseAmmoCount = baseAmmoCounts[firstRoll];
+
+      const winResultRoll = Math.floor(
+        generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6
+      );
+      cursor += 4;
+
+      const baseMultiplier = GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET;
+
+      // Determine win result
+      if (
+        baseMultiplier >= GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET &&
+        winResultRoll < baseAmmoCount
+      ) {
+        const winAmount = betAmount * GAME_CONSTANTS.BASE_WIN_MULTIPLIER_TARGET;
+        playerBalance += winAmount;
+        totalBaseWins++;
+        totalBaseWinAmount += winAmount;
+      }
+
+      // Check for bonus trigger
+      if (Math.floor(generateRandomFloat() * 200) === 0) {
+        bonusesTriggered++;
+        let bonusRoundsRemaining = GAME_CONSTANTS.INITIAL_BONUS_ROUNDS;
         cursor += 4;
 
-        const bonusWinResultRoll = Math.floor(
-          generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6
-        );
-        cursor += 4;
-
-        const bonusAmmoCount =
-          bonusAmmoCounts[
+        // Run bonus rounds
+        while (bonusRoundsRemaining > 0) {
+          const bonusRoundMultiplier =
             Math.floor(
-              generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 186
-            )
-          ];
-        cursor += 4;
+              Math.max(
+                1,
+                0xffffffff /
+                  (generateFloats({ serverSeed, clientSeed, nonce, cursor }) *
+                    0xffffffff +
+                    1)
+              ) * 100
+            ) / 100;
+          cursor += 4;
 
-        if (
-          bonusRoundMultiplier >= GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET &&
-          bonusWinResultRoll < baseAmmoCount + bonusAmmoCount
-        ) {
-          const winAmount = betAmount * GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET;
-          playerBalance += winAmount;
-          totalBonusWins++;
-          totalBonusWinAmount += winAmount;
+          const bonusWinResultRoll = Math.floor(
+            generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 6
+          );
+          cursor += 4;
+
+          if (
+            bonusRoundMultiplier >= GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET &&
+            bonusWinResultRoll < baseAmmoCount + bonusAmmoCount
+          ) {
+            const winAmount = betAmount * GAME_CONSTANTS.BONUS_MULTIPLIER_TARGET;
+            playerBalance += winAmount;
+            totalBonusWins++;
+            totalBonusWinAmount += winAmount;
+          }
+
+          // Check for bonus retrigger
+          if (Math.floor(generateRandomFloat() * 200) === 0) {
+            bonusRetriggersCount++;
+            bonusRoundsRemaining += GAME_CONSTANTS.BONUS_RETRIGGER_ROUNDS;
+          }
+          bonusRoundsRemaining--;
         }
-
-        // Check for bonus retrigger
-        if (
-          Math.floor(
-            generateFloats({ serverSeed, clientSeed, nonce, cursor }) * 200
-          ) === 0
-        ) {
-          bonusRetriggersCount++;
-          bonusRoundsRemaining += GAME_CONSTANTS.BONUS_RETRIGGER_ROUNDS;
-        }
-        cursor += 4;
-
-        bonusRoundsRemaining--;
       }
     }
 
@@ -378,6 +306,19 @@ class GameController {
     };
   }
 
+  // Function to update user balance after game result
+  static async updateUserBalance(userBalance, gameResult) {
+    const netWin =
+      gameResult.totalBaseWinAmount +
+      gameResult.totalBonusWinAmount -
+      gameResult.totalBetAmount;
+
+    const currentBalance = parseFloat(userBalance.cash_balance.toString());
+    userBalance.cash_balance = currentBalance + netWin;
+    await userBalance.save();
+  }
+
+  // Function to update player statistics and game history
   static async updatePlayerStats(player, gameResult, gameDetails) {
     player.totalBaseWins += gameResult.totalBaseWins;
     player.totalBonusWins += gameResult.totalBonusWins;
@@ -398,86 +339,6 @@ class GameController {
     });
 
     await player.save();
-  }
-
-  static async updateUserBalance(userBalance, gameResult) {
-    const netWin =
-      gameResult.totalBaseWinAmount +
-      gameResult.totalBonusWinAmount -
-      gameResult.totalBetAmount;
-
-    const currentBalance = parseFloat(userBalance.cash_balance.toString());
-    userBalance.cash_balance = currentBalance + netWin;
-
-    await userBalance.save();
-  }
-
-  static async getGameStats(userId) {
-    try {
-      const player = await Player.findOne({ username: userId })
-        .select('-_id totalBaseWins totalBonusWins totalBaseWinAmount totalBonusWinAmount totalBetAmount bonusesTriggered bonusRetriggersCount');
-      
-      if (!player) {
-        throw new Error("Player not found");
-      }
-
-      return player;
-    } catch (error) {
-      logger.error(`Error getting game stats for user ${userId}: ${error.message}`);
-      throw error;
-    }
-  }
-
-  static async getGroupGameStatus() {
-    try {
-      const activeGame = await GroupGame.findOne({
-        status: 'pending',
-        end_time: { $gt: new Date() }
-      });
-
-      if (!activeGame) {
-        return {
-          active: false,
-          message: "No active group game found"
-        };
-      }
-
-      return {
-        active: true,
-        gameId: activeGame.game_id,
-        endTime: activeGame.end_time,
-        timeRemaining: new Date(activeGame.end_time).getTime() - Date.now()
-      };
-    } catch (error) {
-      logger.error(`Error getting group game status: ${error.message}`);
-      throw error;
-    }
-  }
-
-  static async getGroupGameResults(gameId, userId) {
-    try {
-      const game = await GroupGame.findOne({ game_id: gameId });
-      if (!game) {
-        throw new Error("Game not found");
-      }
-
-      const wagers = await Wager.find({ 
-        game_id: gameId,
-        user_id: userId 
-      });
-
-      return {
-        game: {
-          status: game.status,
-          result: game.result,
-          endTime: game.end_time
-        },
-        wagers
-      };
-    } catch (error) {
-      logger.error(`Error getting group game results for game ${gameId}: ${error.message}`);
-      throw error;
-    }
   }
 }
 
